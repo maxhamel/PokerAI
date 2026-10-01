@@ -2,6 +2,29 @@
 
 The goal by the end of the project is to train an AI to be really good at poker
 
+## 🤖 AI Learning
+
+### Training Structure
+- Runs as **9-player tournaments**
+- After every **100 hands**, the **bottom 4 players** are replaced by **mutations**
+
+### Inputs (Information)
+- Own stack size
+- Opponents' stack sizes
+- Position
+- Hand (hole cards)
+- Community cards
+- Likelihood of hitting each hand
+- Bet history
+
+### Outputs (Actions)
+- Fold
+- Check
+- Call
+- Bet
+- Raise
+- All In
+
 # ♠️ Poker Game
 
 A Texas Hold'em style game for **up to 9 players**. Each player is dealt **2 hole cards** and starts with a standard amount of chips.
@@ -99,25 +122,4 @@ The winner is either the **last player remaining** in the pot or the best hand a
 
 ---
 
-## 🤖 AI Learning
 
-### Training Structure
-- Runs as **9-player tournaments**
-- After every **100 hands**, the **bottom 4 players** are replaced by **mutations**
-
-### Inputs (Information)
-- Own stack size
-- Opponents' stack sizes
-- Position
-- Hand (hole cards)
-- Community cards
-- Likelihood of hitting each hand
-- Bet history
-
-### Outputs (Actions)
-- Fold
-- Check
-- Call
-- Bet
-- Raise
-- All In
