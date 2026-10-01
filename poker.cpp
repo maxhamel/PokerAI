@@ -1,4 +1,5 @@
 #include <iostream>
+#include <array>
 #include <vector>
 #include <algorithm>
 #include <random>
@@ -18,11 +19,14 @@ enum Suit {
     HEART, DIAMOND, SPADE, CLUB
 };
 enum Rank {
-    ONE, TWO, THREE, FOUR, FIVE, SIX, SEVEN, 
+    TWO, THREE, FOUR, FIVE, SIX, SEVEN, 
     EIGHT, NINE, TEN, JACK, QUEEN, KING, ACE
 };
+enum HAND_RANKINGS {
+    NONE, HIGH_CARD, PAIR, TWO_PAIR, TRIPS, STRAIGHT, FLUSH, FULL_HOUSE, QUADS, STRAIGHT_FLUSH
+};
 
-enum Round {
+enum Street {
     PREFLOP, FLOP, TURN, RIVER
 };
 
@@ -31,23 +35,26 @@ struct Card {
     enum Rank rank;
     
     Card(Suit s, Rank r) : suit(s), rank(r) {}
-
-    Suit get_suit() { return suit; }
-    Rank get_rank() { return rank; }
 };
 
 class Player {
     private:
 
         int chip_count = 0;
+        int street_bet = 0;
+        int id;
         int position;
         vector <Card> cards;
         bool folded = true;   
 
     public:
 
-        Player(int p) : position(p) {
+        Player(int id) : id(id), position(id){
             cards.reserve(2);
+        }
+
+        vector<Card> get_hand() {
+            return cards;
         }
 
         void deal_card(Card c) {
@@ -61,8 +68,8 @@ class Player {
 
         void print_hand() {
             for (Card c: cards) {
-                cout << RANKS[static_cast<int>(c.get_rank())] << " OF " 
-                    << SUITS[static_cast<int>(c.get_suit())] << "S, ";
+                cout << RANKS[static_cast<int>(c.rank)] << " OF " 
+                    << SUITS[static_cast<int>(c.suit)] << "S, ";
             }
             cout << '\n';
         }
@@ -72,12 +79,13 @@ class Game {
     private:
 
         vector <Player> players;
+        vector <Player> players_in_hand;
         vector <Card> deck;
         vector <Card> community;
-        enum Round round = PREFLOP;
-        int players_in_hand = PLAYER_COUNT;
+        enum Street street = PREFLOP;
         int button_pos = 0;
         int pot_size = 0;
+        int street_bet = 0; 
         int hand_counter = 0;
         
         void createDeck() {
@@ -115,7 +123,7 @@ class Game {
             for (Player &p: players) p.new_hand();
             createDeck();
             shuffle();
-            players_in_hand = PLAYER_COUNT;
+            players_in_hand = players;
             deal_preflop();
         }
 
@@ -137,8 +145,8 @@ class Game {
 
         void print_community() {
             for (Card c: community) {
-                cout << RANKS[static_cast<int>(c.get_rank())] << " OF " 
-                    << SUITS[static_cast<int>(c.get_suit())] << "S, ";
+                cout << RANKS[static_cast<int>(c.rank)] << " OF " 
+                    << SUITS[static_cast<int>(c.suit)] << "S, ";
             }
             cout << '\n';
         }
@@ -161,6 +169,40 @@ class Game {
                 community.push_back(deck.back());
                 deck.pop_back();
             }
+        }
+
+        Player showdown() {
+            if (players_in_hand.size() == 1) {
+                return players_in_hand[0];
+            }
+
+            int best_hand = NONE;
+            enum Rank best_high_card = TWO;
+            Player best_player(-1);
+
+            for (Player &p : players_in_hand) {
+                vector <Card> hand = p.get_hand();
+                hand.insert(hand.end(), community.begin(), community.end());
+                // Straight Flush
+                // Quads
+                // Full House
+                // Flush
+                array<int, 4> hand_suits{};
+                for (Card c: hand) {
+                    hand_suits[static_cast<int>(c.suit)] ++;
+                }
+                if (*max_element(hand_suits.begin(), hand_suits.end()) >= 5) {
+                    best_player = p;
+                    best_hand = FLUSH;
+                }
+                // Straight
+                // Trips
+                // Two Pair
+                // Pair
+                // High Card
+            }
+
+            return best_player;
         }
 };
 
