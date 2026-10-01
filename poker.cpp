@@ -41,7 +41,8 @@ class Player {
 
         int chip_count = 0;
         int position;
-        vector <Card> cards;   
+        vector <Card> cards;
+        bool folded = true;   
 
     public:
 
@@ -55,6 +56,7 @@ class Player {
 
         void new_hand() {
             cards.clear();
+            folded = false;
         }
 
         void print_hand() {
@@ -71,6 +73,7 @@ class Game {
 
         vector <Player> players;
         vector <Card> deck;
+        vector <Card> community;
         enum Round round = PREFLOP;
         int players_in_hand = PLAYER_COUNT;
         int button_pos = 0;
@@ -80,6 +83,7 @@ class Game {
         void createDeck() {
 
             deck.reserve(52);
+            community.reserve(5);
 
             for (int s = 0; s < NUMBER_OF_SUITS; s++) {
                 for(int r = 0; r < NUMBER_OF_RANKS; r++) {
@@ -107,6 +111,7 @@ class Game {
 
         void reset_hand() {
             deck.clear();
+            community.clear();
             for (Player &p: players) p.new_hand();
             createDeck();
             shuffle();
@@ -130,12 +135,31 @@ class Game {
             }
         }
 
-        void print_hands() {
+        void print_community() {
+            for (Card c: community) {
+                cout << RANKS[static_cast<int>(c.get_rank())] << " OF " 
+                    << SUITS[static_cast<int>(c.get_suit())] << "S, ";
+            }
+            cout << '\n';
+        }
+
+        void print_summary() {
             int i = 1;
+            cout << "PLAYER HANDS: " << '\n' << "------------------" << '\n';
             for (Player &p: players) {
                 cout << "Player " << i << "'s Hand: ";
                 p.print_hand();
                 i++;
+            }
+            cout << '\n';
+            cout << "COMMUNITY CARDS: " << '\n' << "------------------" << '\n';
+            print_community();
+        }
+
+        void deal(int amount) {
+            for (int i = 0; i < amount; i++) {
+                community.push_back(deck.back());
+                deck.pop_back();
             }
         }
 };
@@ -159,7 +183,11 @@ int main() {
 
     // while (Playing) {
     poker_game.reset_hand();
-    poker_game.print_hands();
+    poker_game.deal(3);
+    poker_game.deal(1);
+    poker_game.deal(1);
+    poker_game.print_summary();
+
     
     // }
 
