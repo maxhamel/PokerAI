@@ -1,6 +1,7 @@
 # ♠️ Poker Game
 
 A Texas Hold'em style game for **up to 9 players**. Each player is dealt **2 hole cards** and starts with a standard amount of chips.
+The goal by the end of the project is to train an AI to be really good at poker
 
 ---
 
