@@ -8,12 +8,14 @@ using namespace std;
 
 const int STARTING_CHIP_COUNT = 100;
 const int PLAYER_COUNT = 9;
-const int NUMBER_OF_RANKS = 14;
+const int NUMBER_OF_RANKS = 13;
 const int NUMBER_OF_SUITS = 4;
 
 const char* SUITS[] = {"HEART", "DIAMOND", "SPADE", "CLUB"};
 const char* RANKS[] = {"ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", 
                     "EIGHT", "NINE", "TEN", "JACK", "QUEEN", "KING", "ACE"};
+const char* HAND_NAMES[] = {"NONE", "HIGH CARD", "PAIR", "TWO PAIR", "THREE OF A KIND",
+                    "STRAIGHT", "FLUSH", "FULL HOUSE", "FOUR OF A KIND", "STRAIGHT FLUSH"};
 
 enum Suit {
     HEART, DIAMOND, SPADE, CLUB
@@ -22,17 +24,18 @@ enum Rank {
     TWO, THREE, FOUR, FIVE, SIX, SEVEN, 
     EIGHT, NINE, TEN, JACK, QUEEN, KING, ACE
 };
-enum HAND_RANKINGS {
+enum Hand_rankings {
     NONE, HIGH_CARD, PAIR, TWO_PAIR, TRIPS, STRAIGHT, FLUSH, FULL_HOUSE, QUADS, STRAIGHT_FLUSH
 };
-
 enum Street {
     PREFLOP, FLOP, TURN, RIVER
 };
-
+enum Position {
+    BB, SB, UTG, UTG1, MP, LJ, HJ, CO, BTN
+};
 struct Card {
-    enum Suit suit;
-    enum Rank rank;
+    Suit suit;
+    Rank rank;
     
     Card(Suit s, Rank r) : suit(s), rank(r) {}
 };
@@ -42,6 +45,7 @@ class Player {
 
         int chip_count = 0;
         int street_bet = 0;
+        int total_bet = 0;
         int id;
         int position;
         vector <Card> cards;
@@ -57,6 +61,10 @@ class Player {
             return cards;
         }
 
+        int get_id() {
+            return id;
+        }
+
         void deal_card(Card c) {
             cards.push_back(c);
         }
@@ -64,6 +72,8 @@ class Player {
         void new_hand() {
             cards.clear();
             folded = false;
+            street_bet = 0;
+            total_bet = 0;
         }
 
         void print_hand() {
@@ -82,7 +92,7 @@ class Game {
         vector <Player> players_in_hand;
         vector <Card> deck;
         vector <Card> community;
-        enum Street street = PREFLOP;
+        Street street = PREFLOP;
         int button_pos = 0;
         int pot_size = 0;
         int street_bet = 0; 
@@ -123,8 +133,8 @@ class Game {
             for (Player &p: players) p.new_hand();
             createDeck();
             shuffle();
-            players_in_hand = players;
             deal_preflop();
+            players_in_hand = players;
         }
 
         void shuffle() {
@@ -162,6 +172,18 @@ class Game {
             cout << '\n';
             cout << "COMMUNITY CARDS: " << '\n' << "------------------" << '\n';
             print_community();
+
+            cout << '\n';
+            cout << "WINNERS: " << '\n' << "------------------" << '\n';
+            vector<Player> winners = showdown();
+            for (Player &p : winners) {
+                vector<Card> hand = p.get_hand();
+                hand.insert(hand.end(), community.begin(), community.end());
+                int score = evaluate(hand);
+
+                cout << "Player " << (p.get_id() + 1) << " - "
+                    << HAND_NAMES[score_category(score)] << '\n';
+            }
         }
 
         void deal(int amount) {
@@ -171,38 +193,146 @@ class Game {
             }
         }
 
-        Player showdown() {
-            if (players_in_hand.size() == 1) {
-                return players_in_hand[0];
+        int find_straight(const std::vector<Card>& cards) {
+            std::vector<int> ranks;
+            for (const Card& c : cards) {
+                ranks.push_back(c.rank);
+            }
+            std::sort(ranks.begin(), ranks.end(), std::greater<int>());
+            ranks.erase(std::unique(ranks.begin(), ranks.end()), ranks.end());
+
+            if (!ranks.empty() && ranks[0] == ACE) {
+                ranks.push_back(TWO - 1);
             }
 
-            int best_hand = NONE;
-            enum Rank best_high_card = TWO;
-            Player best_player(-1);
+            for (size_t i = 0; i + 4 < ranks.size(); i++) {
+                if (ranks[i] - ranks[i + 4] == 4) {
+                    return ranks[i];
+                }
+            }
+            return -1;
+        }
 
-            for (Player &p : players_in_hand) {
-                vector <Card> hand = p.get_hand();
+        int make_score(Hand_rankings category, const vector<int>& ranks) {
+            int score = category;
+            for (size_t i = 0; i < 5; i++) {
+                score = score * 16 + (i < ranks.size() ? ranks[i] : 0);
+            }
+            return score;
+        }
+
+        Hand_rankings score_category(int score) {
+            return static_cast<Hand_rankings>(score >> 20);
+        }
+
+        vector<int> top_ranks(const array<int, 13>& count, const vector<int>& exclude, int n) {
+            vector<int> out;
+            for (int r = ACE; r >= TWO && (int)out.size() < n; r--) {
+                if (count[r] > 0 && find(exclude.begin(), exclude.end(), r) == exclude.end()) {
+                    out.push_back(r);
+                }
+            }
+            return out;
+        }
+
+        int evaluate(const vector<Card>& hand) {
+            array<int, 13> rank_count{};
+            array<int, 4> suit_count{};
+            for (const Card& c : hand) {
+                rank_count[c.rank]++;
+                suit_count[c.suit]++;
+            }
+
+            // Straight flush and flush
+            auto flush_it = max_element(suit_count.begin(), suit_count.end());
+            bool is_flush = *flush_it >= 5;
+            vector<Card> flush_cards;
+            if (is_flush) {
+                Suit flush_suit = static_cast<Suit>(flush_it - suit_count.begin());
+                for (const Card& c : hand) {
+                    if (c.suit == flush_suit) flush_cards.push_back(c);
+                }
+                int sf_high = find_straight(flush_cards);
+                if (sf_high != -1) return make_score(STRAIGHT_FLUSH, {sf_high});
+            }
+
+            // Group ranks by how many times they appear, highest rank first
+            vector<int> quads, trips, pairs;
+            for (int r = ACE; r >= TWO; r--) {
+                if (rank_count[r] == 4) quads.push_back(r);
+                else if (rank_count[r] == 3) trips.push_back(r);
+                else if (rank_count[r] == 2) pairs.push_back(r);
+            }
+
+            //Quads
+            if (!quads.empty()) {
+                vector<int> k = top_ranks(rank_count, {quads[0]}, 1);
+                return make_score(QUADS, {quads[0], k[0]});
+            }
+
+            //Full House
+            if (!trips.empty()) {
+                int pair_rank = -1;
+                if (trips.size() >= 2) pair_rank = trips[1];
+                if (!pairs.empty()) pair_rank = max(pair_rank, pairs[0]);
+                if (pair_rank != -1) return make_score(FULL_HOUSE, {trips[0], pair_rank});
+            }
+
+            //Flush
+            if (is_flush) {
+                vector<int> ranks;
+                for (const Card& c : flush_cards) ranks.push_back(c.rank);
+                sort(ranks.begin(), ranks.end(), greater<int>());
+                ranks.resize(5);  
+                return make_score(FLUSH, ranks);
+            }
+
+            //Straight
+            int straight_high = find_straight(hand);
+            if (straight_high != -1) return make_score(STRAIGHT, {straight_high});
+
+            //Trips
+            if (!trips.empty()) {
+                vector<int> k = top_ranks(rank_count, {trips[0]}, 2);
+                return make_score(TRIPS, {trips[0], k[0], k[1]});
+            }
+
+            //Two pair
+            if (pairs.size() >= 2) {
+                vector<int> k = top_ranks(rank_count, {pairs[0], pairs[1]}, 1);
+                return make_score(TWO_PAIR, {pairs[0], pairs[1], k[0]});
+            }
+
+            //Pair
+            if (pairs.size() == 1) {
+                vector<int> k = top_ranks(rank_count, {pairs[0]}, 3);
+                return make_score(PAIR, {pairs[0], k[0], k[1], k[2]});
+            }
+
+            //High card
+            return make_score(HIGH_CARD, top_ranks(rank_count, {}, 5));
+        }
+
+        vector<Player> showdown() {
+            if (players_in_hand.size() == 1) return players_in_hand;
+
+            int best_score = -1;
+            vector<Player> winners;
+
+            for (Player& p : players_in_hand) {
+                vector<Card> hand = p.get_hand();
                 hand.insert(hand.end(), community.begin(), community.end());
-                // Straight Flush
-                // Quads
-                // Full House
-                // Flush
-                array<int, 4> hand_suits{};
-                for (Card c: hand) {
-                    hand_suits[static_cast<int>(c.suit)] ++;
-                }
-                if (*max_element(hand_suits.begin(), hand_suits.end()) >= 5) {
-                    best_player = p;
-                    best_hand = FLUSH;
-                }
-                // Straight
-                // Trips
-                // Two Pair
-                // Pair
-                // High Card
-            }
 
-            return best_player;
+                int score = evaluate(hand);
+                if (score > best_score) {
+                    winners.clear();
+                    winners.push_back(p);
+                    best_score = score;
+                } else if (score == best_score) {
+                    winners.push_back(p);
+                }
+            }
+            return winners;
         }
 };
 
