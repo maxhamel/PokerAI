@@ -2,13 +2,15 @@
 
 #include "raylib.h"
 #include "types.h"
+#include "agent.h"
 #include <cmath>
 #include <optional>
 
 // Draws the table with raylib and collects actions from the player whose turn
 // it is. Everything is drawn from a PlayerView, so the UI only ever shows what
-// that player is allowed to see.
-class TableUI {
+// that player is allowed to see. Use it as the Agent for human seats and as
+// the game's observer.
+class TableUI : public Agent, public GameObserver {
     public:
 
         TableUI() {
@@ -31,7 +33,7 @@ class TableUI {
         }
 
         // Shows the table to the acting player until they pick an action.
-        Action get_action(const PlayerView& v) {
+        Action act(const PlayerView& v) override {
             raise_to = v.min_raise_to;
             dragging = false;
             while (true) {
@@ -45,7 +47,7 @@ class TableUI {
         }
 
         // Shows the end of a hand (revealed cards, winnings) until "Next hand".
-        void show_result(const PlayerView& v, const HandResult& r) {
+        void hand_over(const PlayerView& v, const HandResult& r) override {
             while (true) {
                 check_quit();
                 BeginDrawing();
@@ -56,7 +58,7 @@ class TableUI {
             }
         }
 
-        void show_game_over(const PlayerView& v, int winner) {
+        void game_over(const PlayerView& v, int winner) override {
             while (!WindowShouldClose()) {
                 BeginDrawing();
                 draw_table(v, nullptr);
