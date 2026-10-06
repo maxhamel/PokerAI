@@ -1,121 +1,108 @@
 #include "evaluator.h"
 
-int find_straight(const vector<Card>& cards) {
-    vector<int> ranks;
-    for (const Card& c : cards) {
-        ranks.push_back(c.rank);
-    }
-    sort(ranks.begin(), ranks.end(), greater<int>());
-    ranks.erase(unique(ranks.begin(), ranks.end()), ranks.end());
+// Hands are scored as category << 20 followed by up to five 4-bit ranks
+// (most important first), e.g. a pair of kings with A-9-4 kickers is
+// PAIR, K, A, 9, 4. Comparing scores as integers then compares hands.
+//
+// Ranks are tracked as 13-bit masks: bit r is set if rank r (TWO = 0 ...
+// ACE = 12) is present.
 
-    if (!ranks.empty() && ranks[0] == ACE) {
-        ranks.push_back(TWO - 1);
-    }
-
-    for (size_t i = 0; i + 4 < ranks.size(); i++) {
-        if (ranks[i] - ranks[i + 4] == 4) {
-            return ranks[i];
-        }
-    }
-    return -1;
+static int make_score(Hand_rankings category, int r0 = 0, int r1 = 0, int r2 = 0, int r3 = 0, int r4 = 0) {
+    return category << 20 | r0 << 16 | r1 << 12 | r2 << 8 | r3 << 4 | r4;
 }
 
-static int make_score(Hand_rankings category, const vector<int>& ranks) {
-    int score = category;
-    for (size_t i = 0; i < 5; i++) {
-        score = score * 16 + (i < ranks.size() ? ranks[i] : 0);
+static int highest(unsigned mask) {
+    return 31 - __builtin_clz(mask);
+}
+
+// Highest card of a straight in `mask`, or -1. An ace also counts as low (A-2-3-4-5).
+static int straight_high(unsigned mask) {
+    unsigned m = (mask << 1) | (mask >> ACE & 1); // bit 0 = low ace, bit r+1 = rank r
+    unsigned runs = m & (m >> 1) & (m >> 2) & (m >> 3) & (m >> 4);
+    return runs ? highest(runs) + 3 : -1;
+}
+
+// Fills `out` with the n highest ranks in `mask`, highest first.
+static void top_ranks(unsigned mask, int n, int* out) {
+    for (int i = 0; i < n; i++) {
+        out[i] = mask ? highest(mask) : 0;
+        if (mask) mask &= ~(1u << out[i]);
     }
-    return score;
+}
+
+int evaluate(span<const Card> hole, span<const Card> board) {
+    int rank_count[13] = {};
+    unsigned suit_mask[4] = {};
+    int suit_count[4] = {};
+    for (span<const Card> cards : {hole, board}) {
+        for (const Card& c : cards) {
+            rank_count[c.rank]++;
+            suit_mask[c.suit] |= 1u << c.rank;
+            suit_count[c.suit]++;
+        }
+    }
+
+    // Straight flush and flush
+    int flush_suit = -1;
+    for (int s = 0; s < 4; s++) if (suit_count[s] >= 5) flush_suit = s;
+    if (flush_suit != -1) {
+        int sf = straight_high(suit_mask[flush_suit]);
+        if (sf != -1) return make_score(STRAIGHT_FLUSH, sf);
+    }
+
+    // Group ranks by how many times they appear
+    unsigned any = 0, quads = 0, trips = 0, pairs = 0;
+    for (int r = 0; r < 13; r++) {
+        unsigned bit = 1u << r;
+        if (rank_count[r]) any |= bit;
+        if (rank_count[r] == 4) quads |= bit;
+        else if (rank_count[r] == 3) trips |= bit;
+        else if (rank_count[r] == 2) pairs |= bit;
+    }
+
+    int k[5];
+    if (quads) {
+        int q = highest(quads);
+        top_ranks(any & ~(1u << q), 1, k);
+        return make_score(QUADS, q, k[0]);
+    }
+
+    if (trips) {
+        int t = highest(trips);
+        unsigned pair_candidates = (trips & ~(1u << t)) | pairs; // a second set of trips also works
+        if (pair_candidates) return make_score(FULL_HOUSE, t, highest(pair_candidates));
+    }
+
+    if (flush_suit != -1) {
+        top_ranks(suit_mask[flush_suit], 5, k);
+        return make_score(FLUSH, k[0], k[1], k[2], k[3], k[4]);
+    }
+
+    int st = straight_high(any);
+    if (st != -1) return make_score(STRAIGHT, st);
+
+    if (trips) {
+        int t = highest(trips);
+        top_ranks(any & ~(1u << t), 2, k);
+        return make_score(TRIPS, t, k[0], k[1]);
+    }
+
+    if (pairs) {
+        int p1 = highest(pairs);
+        unsigned rest = pairs & ~(1u << p1);
+        if (rest) {
+            int p2 = highest(rest);
+            top_ranks(any & ~(1u << p1) & ~(1u << p2), 1, k);
+            return make_score(TWO_PAIR, p1, p2, k[0]);
+        }
+        top_ranks(any & ~(1u << p1), 3, k);
+        return make_score(PAIR, p1, k[0], k[1], k[2]);
+    }
+
+    top_ranks(any, 5, k);
+    return make_score(HIGH_CARD, k[0], k[1], k[2], k[3], k[4]);
 }
 
 Hand_rankings score_category(int score) {
     return static_cast<Hand_rankings>(score >> 20);
-}
-
-static vector<int> top_ranks(const array<int, 13>& count, const vector<int>& exclude, int n) {
-    vector<int> out;
-    for (int r = ACE; r >= TWO && (int)out.size() < n; r--) {
-        if (count[r] > 0 && find(exclude.begin(), exclude.end(), r) == exclude.end()) {
-            out.push_back(r);
-        }
-    }
-    return out;
-}
-
-int evaluate(const vector<Card>& hand) {
-    array<int, 13> rank_count{};
-    array<int, 4> suit_count{};
-    for (const Card& c : hand) {
-        rank_count[c.rank]++;
-        suit_count[c.suit]++;
-    }
-
-    // Straight flush and flush
-    auto flush_it = max_element(suit_count.begin(), suit_count.end());
-    bool is_flush = *flush_it >= 5;
-    vector<Card> flush_cards;
-    if (is_flush) {
-        Suit flush_suit = static_cast<Suit>(flush_it - suit_count.begin());
-        for (const Card& c : hand) {
-            if (c.suit == flush_suit) flush_cards.push_back(c);
-        }
-        int sf_high = find_straight(flush_cards);
-        if (sf_high != -1) return make_score(STRAIGHT_FLUSH, {sf_high});
-    }
-
-    // Group ranks by how many times they appear, highest rank first
-    vector<int> quads, trips, pairs;
-    for (int r = ACE; r >= TWO; r--) {
-        if (rank_count[r] == 4) quads.push_back(r);
-        else if (rank_count[r] == 3) trips.push_back(r);
-        else if (rank_count[r] == 2) pairs.push_back(r);
-    }
-
-    //Quads
-    if (!quads.empty()) {
-        vector<int> k = top_ranks(rank_count, {quads[0]}, 1);
-        return make_score(QUADS, {quads[0], k[0]});
-    }
-
-    //Full House
-    if (!trips.empty()) {
-        int pair_rank = -1;
-        if (trips.size() >= 2) pair_rank = trips[1];
-        if (!pairs.empty()) pair_rank = max(pair_rank, pairs[0]);
-        if (pair_rank != -1) return make_score(FULL_HOUSE, {trips[0], pair_rank});
-    }
-
-    //Flush
-    if (is_flush) {
-        vector<int> ranks;
-        for (const Card& c : flush_cards) ranks.push_back(c.rank);
-        sort(ranks.begin(), ranks.end(), greater<int>());
-        ranks.resize(5);  
-        return make_score(FLUSH, ranks);
-    }
-
-    //Straight
-    int straight_high = find_straight(hand);
-    if (straight_high != -1) return make_score(STRAIGHT, {straight_high});
-
-    //Trips
-    if (!trips.empty()) {
-        vector<int> k = top_ranks(rank_count, {trips[0]}, 2);
-        return make_score(TRIPS, {trips[0], k[0], k[1]});
-    }
-
-    //Two pair
-    if (pairs.size() >= 2) {
-        vector<int> k = top_ranks(rank_count, {pairs[0], pairs[1]}, 1);
-        return make_score(TWO_PAIR, {pairs[0], pairs[1], k[0]});
-    }
-
-    //Pair
-    if (pairs.size() == 1) {
-        vector<int> k = top_ranks(rank_count, {pairs[0]}, 3);
-        return make_score(PAIR, {pairs[0], k[0], k[1], k[2]});
-    }
-
-    //High card
-    return make_score(HIGH_CARD, top_ranks(rank_count, {}, 5));
 }

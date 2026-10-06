@@ -71,7 +71,7 @@ struct PlayerView {
     bool can_raise;
     vector<int> stacks;         // by seat
     vector<int> street_bets;    // by seat
-    vector<bool> folded;        // by seat
+    vector<char> folded;        // by seat (1 = folded); char because vector<bool> is slow
     vector<string> last_action; // by seat, this street
     vector<string> log;         // recent actions, oldest first
 };

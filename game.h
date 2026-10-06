@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include "agent.h"
+#include "rng.h"
 
 class Player {
     private:
@@ -20,7 +21,7 @@ class Player {
             cards.reserve(2);
         }
 
-        vector<Card> get_hand() const {
+        const vector<Card>& get_hand() const {
             return cards;
         }
 
@@ -78,7 +79,10 @@ class Game {
         vector <Agent*> agents;   // by seat
         GameObserver* observer;   // optional, e.g. the UI
         bool verbose;             // print the action log to the terminal
+        bool logging;             // build log/action text; off when nobody reads it (training)
+        FastRng rng;              // shuffles the deck; seed it for repeatable games
         vector <Card> deck;
+        int cards_left = 0;       // deck[0, cards_left) haven't been dealt this hand
         vector <Card> community;
         Street street = PREFLOP;
         int button_pos = 0;
@@ -90,6 +94,9 @@ class Game {
         int bb_pos = 0;
         vector<string> last_action; // by seat, this street
         vector<string> log_lines;
+        PlayerView view;            // reused for every decision
+        // scratch space reused every hand, so the game loop doesn't allocate
+        vector<int> acted_at_buf, bets_buf, scores_buf, won_buf, winners_buf;
 
         void createDeck();
         void createPlayers();
@@ -101,17 +108,19 @@ class Game {
         void post_blinds(int sb, int bb);
         void new_street();
         PlayerView table_view();
-        PlayerView make_view(const Player& p, bool can_raise);
+        void fill_public(PlayerView& v);
+        const PlayerView& make_view(const Player& p, bool can_raise);
         Action get_action(const PlayerView& v);
         void betting_round(int first);
-        void shuffle();
+        Card draw();
         void deal_preflop();
         void deal(int amount);
-        vector<int> payouts();
+        const vector<int>& payouts();
 
     public:
 
-        Game(const vector<Agent*>& agents, GameObserver* observer = nullptr, bool verbose = false);
+        Game(const vector<Agent*>& agents, GameObserver* observer = nullptr, bool verbose = false,
+             unsigned seed = random_device{}());
 
         int play();
         void play_hand();

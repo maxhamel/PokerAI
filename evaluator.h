@@ -1,12 +1,12 @@
 #pragma once
 
 #include "types.h"
+#include <span>
 
-// Scores a hand of up to 7 cards (best five count). Higher score = better hand.
-int evaluate(const vector<Card>& hand);
+// Scores the best five-card hand made from `hole` plus `board` (5 to 7 cards
+// in total). Higher score = better hand; equal scores tie. Doesn't allocate,
+// so it's cheap to call many times (e.g. for simulating odds).
+int evaluate(span<const Card> hole, span<const Card> board = {});
 
 // The hand category (pair, flush, ...) of a score from evaluate().
 Hand_rankings score_category(int score);
-
-// Highest card of a straight in `cards`, or -1 if there isn't one.
-int find_straight(const vector<Card>& cards);

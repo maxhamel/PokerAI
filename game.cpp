@@ -23,26 +23,26 @@ void Game::createPlayers() {
     }
 }
 
-Game::Game(const vector<Agent*>& agents, GameObserver* observer, bool verbose)
-    : agents(agents), observer(observer), verbose(verbose) {
+Game::Game(const vector<Agent*>& agents, GameObserver* observer, bool verbose, unsigned seed)
+    : agents(agents), observer(observer), verbose(verbose),
+      logging(verbose || observer), rng(seed) {
     createDeck();
     createPlayers();
     last_action.assign(players.size(), "");
 }
 
 void Game::log(const string& line) {
+    if (!logging) return;
     if (verbose) cout << line << '\n';
     log_lines.push_back(line);
     if (log_lines.size() > 50) log_lines.erase(log_lines.begin());
 }
 
 void Game::reset_hand() {
-    deck.clear();
+    cards_left = deck.size(); // every card is back in the deck
     community.clear();
     for (Player &p: players) p.new_hand();
-    last_action.assign(players.size(), "");
-    createDeck();
-    shuffle();
+    if (logging) last_action.assign(players.size(), "");
     deal_preflop();
 }
 
@@ -81,7 +81,7 @@ void Game::post_blinds(int sb, int bb) {
 
 void Game::new_street() {
     for (Player &p: players) p.new_street();
-    last_action.assign(players.size(), "");
+    if (logging) last_action.assign(players.size(), "");
     current_bet = 0;
     min_raise = BIG_BLIND;
 }
@@ -89,7 +89,15 @@ void Game::new_street() {
 // Public information only: what anyone watching the table can see.
 PlayerView Game::table_view() {
     PlayerView v;
+    fill_public(v);
+    return v;
+}
+
+// Writes the public table state into `v`, reusing its vectors' memory.
+void Game::fill_public(PlayerView& v) {
+    int n = players.size();
     v.id = -1;
+    v.hole.clear();
     v.community = community;
     v.hand_number = hand_counter;
     v.button = button_pos;
@@ -101,19 +109,26 @@ PlayerView Game::table_view() {
     v.min_raise_to = 0;
     v.max_raise_to = 0;
     v.can_raise = false;
-    for (Player &q: players) {
-        v.stacks.push_back(q.get_chips());
-        v.street_bets.push_back(q.get_street_bet());
-        v.folded.push_back(q.is_folded());
+    v.stacks.resize(n);
+    v.street_bets.resize(n);
+    v.folded.resize(n);
+    for (int i = 0; i < n; i++) {
+        v.stacks[i] = players[i].get_chips();
+        v.street_bets[i] = players[i].get_street_bet();
+        v.folded[i] = players[i].is_folded();
     }
-    v.last_action = last_action;
-    int first = max(0, (int)log_lines.size() - 7);
-    v.log.assign(log_lines.begin() + first, log_lines.end());
-    return v;
+    if (logging) { // text is only for display
+        v.last_action = last_action;
+        int first = max(0, (int)log_lines.size() - 7);
+        v.log.assign(log_lines.begin() + first, log_lines.end());
+    }
 }
 
-PlayerView Game::make_view(const Player& p, bool can_raise) {
-    PlayerView v = table_view();
+// The acting player's view. Reuses one PlayerView so deciding an action
+// doesn't allocate memory; it's only valid until the next call.
+const PlayerView& Game::make_view(const Player& p, bool can_raise) {
+    PlayerView& v = view;
+    fill_public(v);
     v.id = p.get_id();
     v.hole = p.get_hand();
     v.to_call = current_bet - p.get_street_bet();
@@ -133,55 +148,61 @@ Action Game::get_action(const PlayerView& v) {
 // acted since the last raise, or only one player is left.
 void Game::betting_round(int first) {
     int n = players.size();
-    vector<int> acted_at(n, -1);       // current_bet when each player last acted
+    vector<int>& acted_at = acted_at_buf; // current_bet when each player last acted
+    acted_at.assign(n, -1);
     int last_full_raise = current_bet; // bet level set by the last complete raise
-    int to_act = 0;
-    for (Player &p: players) if (can_act(p)) to_act++;
+    // running counts, updated after each action instead of rescanning the table
+    int live = live_count(); // players who haven't folded
+    int active = 0;          // players who can still act (not folded or all-in)
+    for (Player &p: players) if (can_act(p)) active++;
+    int to_act = active;
 
-    for (int i = first % n; to_act > 0 && live_count() > 1; i = (i + 1) % n) {
+    for (int i = first % n; to_act > 0 && live > 1; i = (i + 1) % n) {
         Player &p = players[i];
         if (!can_act(p)) continue;
 
         int to_call = current_bet - p.get_street_bet();
         // nobody left to bet against (everyone else folded or all-in)
-        int others = 0;
-        for (Player &q: players) if (&q != &p && can_act(q)) others++;
+        int others = active - 1;
         if (others == 0 && to_call == 0) break;
 
         // An all-in raise smaller than a full raise doesn't reopen
         // betting for players who already acted.
         bool can_raise = others > 0 && (acted_at[i] == -1 || last_full_raise > acted_at[i]);
-        PlayerView v = make_view(p, can_raise);
+        const PlayerView& v = make_view(p, can_raise);
         Action a = get_action(v);
         if (!is_legal(v, a)) a = {to_call == 0 ? CHECK : FOLD};
 
-        string did;
+        bool opening_bet = current_bet == 0;
         if (a.type == FOLD) {
             p.fold();
-            did = "Fold";
-        } else if (a.type == CHECK) {
-            did = "Check";
         } else if (a.type == CALL) {
             pot_size += p.bet(to_call);
-            did = "Call " + to_string(p.get_street_bet());
         } else if (a.type == RAISE) {
             if (a.amount - current_bet >= min_raise) {
                 min_raise = a.amount - current_bet;
                 last_full_raise = a.amount;
             }
-            did = (current_bet == 0 ? "Bet " : "Raise to ") + to_string(a.amount);
             current_bet = a.amount;
             pot_size += p.bet(a.amount - p.get_street_bet());
         }
-        if (p.is_all_in()) did += " (all-in)";
-        last_action[i] = did;
-        log("Player " + to_string(i + 1) + ": " + did);
         acted_at[i] = current_bet;
+        if (a.type == FOLD) { live--; active--; }
+        else if (p.is_all_in()) active--;
+
+        if (logging) {
+            string did = a.type == FOLD ? "Fold"
+                : a.type == CHECK ? "Check"
+                : a.type == CALL ? "Call " + to_string(p.get_street_bet())
+                : (opening_bet ? "Bet " : "Raise to ") + to_string(a.amount);
+            if (p.is_all_in()) did += " (all-in)";
+            last_action[i] = did;
+            log("Player " + to_string(i + 1) + ": " + did);
+        }
 
         if (a.type == RAISE) {
             // everyone else has to respond to the raise
-            to_act = 0;
-            for (Player &q: players) if (&q != &p && can_act(q)) to_act++;
+            to_act = active - (can_act(p) ? 1 : 0);
         } else {
             to_act--;
         }
@@ -191,7 +212,7 @@ void Game::betting_round(int first) {
 void Game::play_hand() {
     reset_hand();
     hand_counter++;
-    log("--- Hand #" + to_string(hand_counter) + " ---");
+    if (logging) log("--- Hand #" + to_string(hand_counter) + " ---");
 
     // Heads-up, the button posts the small blind and acts first preflop.
     sb_pos = live_count() == 2 ? button_pos : next_seat_with_chips(button_pos);
@@ -204,24 +225,25 @@ void Game::play_hand() {
         if (live_count() <= 1) break;
         deal(cards);
         new_street();
-        log(community.size() == 3 ? "Flop" : community.size() == 4 ? "Turn" : "River");
+        if (logging) log(community.size() == 3 ? "Flop" : community.size() == 4 ? "Turn" : "River");
         betting_round(button_pos + 1); // postflop starts left of the button
     }
 
-    HandResult result;
-    result.shown.assign(players.size(), {});
-    result.hand_name.assign(players.size(), "");
-    if (live_count() > 1) { // a hand won by folds isn't shown
-        for (Player &p: players) {
-            if (p.is_folded()) continue;
-            vector<Card> hand = p.get_hand();
-            hand.insert(hand.end(), community.begin(), community.end());
-            result.shown[p.get_id()] = p.get_hand();
-            result.hand_name[p.get_id()] = HAND_NAMES[score_category(evaluate(hand))];
+    const vector<int>& won = payouts();
+    if (observer) {
+        HandResult result;
+        result.won = won;
+        result.shown.assign(players.size(), {});
+        result.hand_name.assign(players.size(), "");
+        if (live_count() > 1) { // a hand won by folds isn't shown
+            for (Player &p: players) {
+                if (p.is_folded()) continue;
+                result.shown[p.get_id()] = p.get_hand();
+                result.hand_name[p.get_id()] = HAND_NAMES[score_category(evaluate(p.get_hand(), community))];
+            }
         }
+        observer->hand_over(table_view(), result);
     }
-    result.won = payouts();
-    if (observer) observer->hand_over(table_view(), result);
     button_pos = next_seat_with_chips(button_pos);
 }
 
@@ -233,44 +255,45 @@ int Game::play() {
     return winner;
 }
 
-void Game::shuffle() {
-    random_device rd;
-    mt19937 rng(rd());
-
-    std::shuffle(deck.begin(), deck.end(), rng);
+// Deals a random card from the ones not dealt yet this hand. This is a
+// Fisher-Yates shuffle done one card at a time, so only the cards actually
+// dealt get shuffled.
+Card Game::draw() {
+    int j = rng.below(cards_left);
+    swap(deck[j], deck[cards_left - 1]);
+    return deck[--cards_left];
 }
 
 void Game::deal_preflop() {
     for (Player &p: players) {
         if (p.is_folded()) continue; // busted players aren't dealt in
-        p.deal_card(deck.back());
-        deck.pop_back();
-        p.deal_card(deck.back());
-        deck.pop_back();
+        p.deal_card(draw());
+        p.deal_card(draw());
     }
 }
 
 void Game::deal(int amount) {
     for (int i = 0; i < amount; i++) {
-        community.push_back(deck.back());
-        deck.pop_back();
+        community.push_back(draw());
     }
 }
 
 // Splits the pot into main/side pots by repeatedly peeling off the
 // smallest remaining bet among live players.
-vector<int> Game::payouts() {
+const vector<int>& Game::payouts() {
     int n = players.size();
     bool showdown = live_count() > 1; // no need to evaluate a hand won by folds
-    vector<int> bets(n);
-    vector<int> scores(n, -1);
-    vector<int> won(n, 0);
+    vector<int>& bets = bets_buf;
+    vector<int>& scores = scores_buf;
+    vector<int>& won = won_buf;
+    vector<int>& winners = winners_buf;
+    bets.assign(n, 0);
+    scores.assign(n, -1);
+    won.assign(n, 0);
     for (Player& p : players) {
         bets[p.get_id()] = p.get_total_bet();
         if (!p.is_folded() && showdown) {
-            vector<Card> hand = p.get_hand();
-            hand.insert(hand.end(), community.begin(), community.end());
-            scores[p.get_id()] = evaluate(hand);
+            scores[p.get_id()] = evaluate(p.get_hand(), community);
         }
     }
 
@@ -285,11 +308,11 @@ vector<int> Game::payouts() {
 
         // best hand among live players still in this layer
         int best = -1;
-        vector<int> winners;
+        winners.clear();
         for (Player& p : players) {
             int id = p.get_id();
             if (p.is_folded() || bets[id] == 0) continue;
-            if (scores[id] > best) { best = scores[id]; winners = {id}; }
+            if (scores[id] > best) { best = scores[id]; winners.assign(1, id); }
             else if (scores[id] == best) winners.push_back(id);
         }
 
@@ -315,7 +338,7 @@ vector<int> Game::payouts() {
     for (int id = 0; id < n; id++) {
         if (won[id] == 0) continue;
         players[id].add_chips(won[id]);
-        log("Player " + to_string(id + 1) + " wins " + to_string(won[id]));
+        if (logging) log("Player " + to_string(id + 1) + " wins " + to_string(won[id]));
     }
     pot_size = 0;
     return won;
