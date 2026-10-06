@@ -74,3 +74,5 @@ poker
 
 # macOS clutter
 .DS_Store
+
+/compile_flags.txt

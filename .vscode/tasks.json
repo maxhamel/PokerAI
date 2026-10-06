@@ -9,12 +9,15 @@
                 "-fcolor-diagnostics",
                 "-fansi-escape-codes",
                 "-g",
-                "${file}",
+                "-I/opt/homebrew/include",
+                "${workspaceFolder}/poker.cpp",
+                "-L/opt/homebrew/lib",
+                "-lraylib",
                 "-o",
-                "${fileDirname}/${fileBasenameNoExtension}"
+                "${workspaceFolder}/poker"
             ],
             "options": {
-                "cwd": "${fileDirname}"
+                "cwd": "${workspaceFolder}"
             },
             "problemMatcher": [
                 "$gcc"
