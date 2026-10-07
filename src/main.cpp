@@ -21,11 +21,14 @@
 //   ./poker train <6max|headsup> [option=value ...]
 //                        evolves a network that maximizes chips won per hand.
 //                        Options: gens pop hands block elites rate size
-//                        samples temp self eval_every eval_hands seed
-//                        threads out
-//   ./poker eval <model> [hands]
-//                        plays a trained network against tables of each
-//                        baseline bot and reports chips won per hand
+//                        samples temp eval_every eval_hands seed threads out
+//                        opponent mix: versions tight loose random equity call
+//                        pool of past versions: pool pool_hands
+//   ./poker eval <model> [hands] [opponent model]
+//                        plays a trained network against tables of each kind
+//                        of bot (and optionally a table of another network)
+//                        and reports chips won per hand
+
 int main(int argc, char** argv) {
     string mode = argc > 1 ? argv[1] : "play";
 
@@ -130,7 +133,14 @@ int main(int argc, char** argv) {
             else if (key == "size") cfg.mutation_size = stof(value);
             else if (key == "samples") cfg.equity_samples = stoi(value);
             else if (key == "temp") cfg.temperature = stof(value);
-            else if (key == "self") cfg.self_play = stoi(value);
+            else if (key == "versions") cfg.mix_versions = stoi(value);
+            else if (key == "tight") cfg.mix_tight = stoi(value);
+            else if (key == "loose") cfg.mix_loose = stoi(value);
+            else if (key == "random") cfg.mix_random = stoi(value);
+            else if (key == "equity") cfg.mix_equity = stoi(value);
+            else if (key == "call") cfg.mix_call = stoi(value);
+            else if (key == "pool") cfg.pool_size = stoi(value);
+            else if (key == "pool_hands") cfg.pool_hands = stoi(value);
             else if (key == "eval_every") cfg.eval_every = stoi(value);
             else if (key == "eval_hands") cfg.eval_hands = stoi(value);
             else if (key == "seed") cfg.seed = stoull(value);
@@ -149,24 +159,46 @@ int main(int argc, char** argv) {
         Network net;
         string error;
         if (argc < 3 || !Network::load(argv[2], net, error)) {
-            cout << (argc < 3 ? "usage: " + string(argv[0]) + " eval <model> [hands]" : error) << '\n';
+            cout << (argc < 3 ? "usage: " + string(argv[0]) + " eval <model> [hands] [opponent model]" : error) << '\n';
             return 1;
         }
         int hands = argc > 3 ? atoi(argv[3]) : 100000;
+        Network rival;
+        bool has_rival = argc > 4;
+        if (has_rival && !Network::load(argv[4], rival, error)) {
+            cout << error << '\n';
+            return 1;
+        }
+        if (has_rival && rival.players != net.players) {
+            cout << "the two models were trained for different table sizes\n";
+            return 1;
+        }
         int threads = max(1u, thread::hardware_concurrency());
-        printf("%s (%d players), %d hands per table (TightAggressiveBot is never seen in training):\n",
-               argv[2], net.players, hands);
-        for (Baseline b : {VS_RANDOM, VS_CALL, VS_EQUITY, VS_TIGHT_AGGRESSIVE}) {
+        printf("%s (%d players), %d hands per table:\n", argv[2], net.players, hands);
+        auto row = [&](Baseline b) {
             Score s = evaluate(net, b, net.players, hands, 200, 12345, threads);
-            printf("  vs %-19s %+7.2f +- %.2f chips/hand  (%+.0f bb/100)\n",
+            printf("    vs %-23s %+7.2f +- %.2f chips/hand  (%+.0f bb/100)\n",
                    (baseline_name(b) + "s").c_str(), s.chips_per_hand, s.ci95, s.bb_per_100());
+            return s.chips_per_hand;
+        };
+        printf("  StyleBots (the default training mix uses the tight and loose ones):\n");
+        for (Baseline b : {VS_TIGHT_STYLES, VS_LOOSE_STYLES, VS_STYLES}) row(b);
+        printf("  other bots:\n");
+        for (Baseline b : {VS_RANDOM, VS_CALL, VS_EQUITY}) row(b);
+        printf("  held out (hand-written, never used in training):\n");
+        double held_out = (row(VS_TIGHT_AGGRESSIVE) + row(VS_LOOSE_AGGRESSIVE)) / 2;
+        printf("    held-out average           %+7.2f chips/hand\n", held_out);
+        if (has_rival) {
+            Score s = evaluate_vs(net, rival, net.players, hands, 200, 12345, threads);
+            printf("  vs a table of %s: %+.2f +- %.2f chips/hand  (%+.0f bb/100)\n",
+                   argv[4], s.chips_per_hand, s.ci95, s.bb_per_100());
         }
         return 0;
     }
 
     if (mode != "play" && mode != "hotseat") {
         cout << "usage: " << argv[0] << " [play [model] | hotseat | features [seed] | sim [games] [seed] [threads]\n"
-             << "       | train <6max|headsup> [option=value ...] | eval <model> [hands]]\n";
+             << "       | train <6max|headsup> [option=value ...] | eval <model> [hands] [opponent model]]\n";
         return 1;
     }
 

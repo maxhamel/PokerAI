@@ -4,11 +4,21 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <memory>
 
 string baseline_name(Baseline b) {
-    return b == VS_RANDOM ? "RandomBot" : b == VS_CALL ? "CallBot"
-         : b == VS_EQUITY ? "EquityBot" : "TightAggressiveBot";
+    switch (b) {
+        case VS_RANDOM: return "RandomBot";
+        case VS_CALL: return "CallBot";
+        case VS_EQUITY: return "EquityBot";
+        case VS_STYLES: return "StyleBot";
+        case VS_TIGHT_STYLES: return "tight StyleBot";
+        case VS_LOOSE_STYLES: return "loose StyleBot";
+        case VS_TIGHT_AGGRESSIVE: return "TightAggressiveBot";
+        case VS_LOOSE_AGGRESSIVE: return "LooseAggressiveBot";
+    }
+    return "?";
 }
 
 // Runs f(0) .. f(n - 1) across `threads` threads.
@@ -44,23 +54,49 @@ struct Tally {
 };
 
 // Who sits at the table with the network being tested.
-enum OpponentKind { OPP_RANDOM, OPP_CALL, OPP_EQUITY, OPP_TIGHT_AGGRESSIVE, OPP_HALL_OF_FAME, OPP_POPULATION };
+enum OpponentKind {
+    OPP_RANDOM, OPP_CALL, OPP_EQUITY, OPP_STYLE, OPP_TIGHT_STYLE, OPP_LOOSE_STYLE,
+    OPP_TIGHT_AGGRESSIVE, OPP_LOOSE_AGGRESSIVE,
+    OPP_NETWORK // a network: a pool version, or a model to evaluate against
+};
 
 struct OpponentSpec {
     OpponentKind kind;
-    int index;      // which hall-of-fame or population network
-    uint64_t seed;
+    int index;      // which network, for OPP_NETWORK
+    uint64_t seed;  // also picks a StyleBot's style
 };
 
-static unique_ptr<Agent> make_opponent(const OpponentSpec& s, const vector<Network>& hall,
-                                       const vector<Network>& population, int equity_samples) {
+// One training opponent, drawn with the mix weights. Past versions are only
+// drawn when allowed and the pool isn't empty.
+static OpponentSpec sample_opponent(FastRng& rng, const TrainConfig& cfg, int pool_size, bool allow_versions) {
+    int versions = allow_versions && pool_size > 0 ? cfg.mix_versions : 0;
+    int weights[] = {versions, cfg.mix_tight, cfg.mix_loose, cfg.mix_random, cfg.mix_equity, cfg.mix_call};
+    OpponentKind kinds[] = {OPP_NETWORK, OPP_TIGHT_STYLE, OPP_LOOSE_STYLE, OPP_RANDOM, OPP_EQUITY, OPP_CALL};
+    int total = 0;
+    for (int w : weights) total += w;
+    int roll = total > 0 ? rng.below(total) : 0;
+    OpponentSpec s = {OPP_RANDOM, 0, 0};
+    for (int i = 0; i < 6; i++) {
+        if (roll < weights[i]) { s.kind = kinds[i]; break; }
+        roll -= weights[i];
+    }
+    if (s.kind == OPP_NETWORK) s.index = rng.below(pool_size);
+    s.seed = rng();
+    return s;
+}
+
+static unique_ptr<Agent> make_opponent(const OpponentSpec& s, const vector<Network>& networks, int equity_samples) {
+    FastRng style_rng(s.seed);
     switch (s.kind) {
         case OPP_RANDOM: return make_unique<RandomBot>(s.seed);
         case OPP_CALL: return make_unique<CallBot>();
         case OPP_EQUITY: return make_unique<EquityBot>(s.seed, equity_samples);
+        case OPP_STYLE: return make_unique<StyleBot>(Style::random(style_rng), s.seed, equity_samples);
+        case OPP_TIGHT_STYLE: return make_unique<StyleBot>(Style::tight(style_rng), s.seed, equity_samples);
+        case OPP_LOOSE_STYLE: return make_unique<StyleBot>(Style::loose_aggressive(style_rng), s.seed, equity_samples);
         case OPP_TIGHT_AGGRESSIVE: return make_unique<TightAggressiveBot>(s.seed);
-        case OPP_HALL_OF_FAME: return make_unique<NeuralBot>(&hall[s.index], s.seed, equity_samples);
-        case OPP_POPULATION: return make_unique<NeuralBot>(&population[s.index], s.seed, equity_samples);
+        case OPP_LOOSE_AGGRESSIVE: return make_unique<LooseAggressiveBot>(s.seed);
+        case OPP_NETWORK: return make_unique<NeuralBot>(&networks[s.index], s.seed, equity_samples);
     }
     return nullptr;
 }
@@ -75,27 +111,45 @@ static Tally play_hands(Agent& hero, const vector<Agent*>& opponents, int hands,
     return t;
 }
 
-Score evaluate(const Network& net, Baseline opponents, int players, int hands, int stack,
-               uint64_t seed, int threads, int equity_samples) {
+// Plays `net` in seat 0 for `hands` cash hands, in chunks of 500 with a new
+// table each chunk; pick(rng) chooses each opponent.
+template <class Pick>
+static Tally evaluate_with(const Network& net, Pick pick, const vector<Network>& networks, int players,
+                           int hands, int stack, uint64_t seed, int threads, int equity_samples) {
     const int chunk = 500;
     int chunks = (hands + chunk - 1) / chunk;
     vector<Tally> tallies(chunks);
     parallel_for(chunks, threads, [&](int c) {
         uint64_t s = seed * 1000003 + c * 7919;
+        FastRng rng(s);
         NeuralBot hero(&net, s, equity_samples);
         vector<unique_ptr<Agent>> owned;
         vector<Agent*> opps;
         for (int i = 1; i < players; i++) {
-            OpponentKind kind = opponents == VS_RANDOM ? OPP_RANDOM : opponents == VS_CALL ? OPP_CALL
-                              : opponents == VS_EQUITY ? OPP_EQUITY : OPP_TIGHT_AGGRESSIVE;
-            owned.push_back(make_opponent({kind, 0, s + i}, {}, {}, equity_samples));
+            owned.push_back(make_opponent(pick(rng), networks, equity_samples));
             opps.push_back(owned.back().get());
         }
         tallies[c] = play_hands(hero, opps, min(chunk, hands - c * chunk), stack, s);
     });
     Tally total;
     for (const Tally& t : tallies) total.add(t);
-    return total.score();
+    return total;
+}
+
+Score evaluate(const Network& net, Baseline opponents, int players, int hands, int stack,
+               uint64_t seed, int threads, int equity_samples) {
+    OpponentKind kinds[] = {OPP_RANDOM, OPP_CALL, OPP_EQUITY, OPP_STYLE, OPP_TIGHT_STYLE, OPP_LOOSE_STYLE,
+                            OPP_TIGHT_AGGRESSIVE, OPP_LOOSE_AGGRESSIVE};
+    OpponentKind kind = kinds[opponents];
+    auto pick = [&](FastRng& rng) { return OpponentSpec{kind, 0, rng()}; };
+    return evaluate_with(net, pick, {}, players, hands, stack, seed, threads, equity_samples).score();
+}
+
+Score evaluate_vs(const Network& net, const Network& opponent, int players, int hands, int stack,
+                  uint64_t seed, int threads, int equity_samples) {
+    vector<Network> networks = {opponent};
+    auto pick = [&](FastRng& rng) { return OpponentSpec{OPP_NETWORK, 0, rng()}; };
+    return evaluate_with(net, pick, networks, players, hands, stack, seed, threads, equity_samples).score();
 }
 
 static Network mutate(const Network& parent, FastRng& rng, const TrainConfig& cfg) {
@@ -114,16 +168,31 @@ Network train(const TrainConfig& cfg) {
         population.push_back(Network::random(rng, cfg.players));
         population.back().temperature = cfg.temperature;
     }
-    vector<Network> hall; // champions of past generations
-    const int HALL_SIZE = 20;
+
+    // Past versions the network plays against, and where they're saved.
+    vector<Network> pool;
+    vector<int> pool_gen; // generation each version came from
+    filesystem::path pool_dir;
+    if (!cfg.out_path.empty()) {
+        filesystem::path out(cfg.out_path);
+        pool_dir = out.parent_path() / (out.stem().string() + "_versions");
+        filesystem::remove_all(pool_dir);
+        filesystem::create_directories(pool_dir);
+    }
+    auto version_path = [&](int gen) {
+        char name[32];
+        snprintf(name, sizeof(name), "v%04d.net", gen);
+        return pool_dir / name;
+    };
 
     int blocks = max(1, (cfg.hands + cfg.block - 1) / cfg.block);
-    Network best_network = population[0];
-    double best_validation = -INFINITY;
+    Network newest = population[0];
 
     printf("Training %s: %d generations, population %d, %d hands each per generation, %d threads\n",
            cfg.players == 2 ? "heads-up" : (to_string(cfg.players) + "-player").c_str(),
            cfg.generations, cfg.population, cfg.hands, cfg.threads);
+    printf("Opponent mix: %d past versions, %d tight, %d loose-aggressive, %d random, %d equity, %d call\n",
+           cfg.mix_versions, cfg.mix_tight, cfg.mix_loose, cfg.mix_random, cfg.mix_equity, cfg.mix_call);
 
     for (int gen = 1; gen <= cfg.generations; gen++) {
         auto start = chrono::steady_clock::now();
@@ -133,24 +202,7 @@ Network train(const TrainConfig& cfg) {
         vector<vector<OpponentSpec>> lineups(blocks);
         vector<uint64_t> deck_seeds(blocks), hero_seeds(blocks);
         for (int b = 0; b < blocks; b++) {
-            for (int i = 1; i < cfg.players; i++) {
-                // baseline bots: 60% EquityBot, 20% CallBot, 20% RandomBot;
-                // networks: half hall of fame, half current population
-                OpponentSpec s;
-                s.seed = rng();
-                s.index = 0;
-                if ((int)rng.below(100) >= cfg.self_play) {
-                    int roll = rng.below(10);
-                    s.kind = roll < 6 ? OPP_EQUITY : roll < 8 ? OPP_CALL : OPP_RANDOM;
-                } else if (!hall.empty() && rng.below(2)) {
-                    s.kind = OPP_HALL_OF_FAME;
-                    s.index = rng.below(hall.size());
-                } else {
-                    s.kind = OPP_POPULATION;
-                    s.index = rng.below(population.size());
-                }
-                lineups[b].push_back(s);
-            }
+            for (int i = 1; i < cfg.players; i++) lineups[b].push_back(sample_opponent(rng, cfg, pool.size(), true));
             deck_seeds[b] = rng();
             hero_seeds[b] = rng();
         }
@@ -162,7 +214,7 @@ Network train(const TrainConfig& cfg) {
                 vector<unique_ptr<Agent>> owned;
                 vector<Agent*> opps;
                 for (const OpponentSpec& s : lineups[b]) {
-                    owned.push_back(make_opponent(s, hall, population, cfg.equity_samples));
+                    owned.push_back(make_opponent(s, pool, cfg.equity_samples));
                     opps.push_back(owned.back().get());
                 }
                 NeuralBot hero(&population[c], hero_seeds[b], cfg.equity_samples);
@@ -180,29 +232,53 @@ Network train(const TrainConfig& cfg) {
         mean /= cfg.population;
         const Network& champion = population[order[0]];
 
-        hall.push_back(champion);
-        if ((int)hall.size() > HALL_SIZE) hall.erase(hall.begin());
-
         double secs = chrono::duration<double>(chrono::steady_clock::now() - start).count();
-        printf("gen %3d | best %+7.2f chips/hand | mean %+7.2f | %.1fs\n", gen, fitness[order[0]], mean, secs);
+        printf("gen %3d | best %+7.2f chips/hand | mean %+7.2f | pool %zu | %.1fs\n",
+               gen, fitness[order[0]], mean, pool.size(), secs);
 
-        // Check the champion against EquityBots on fresh hands: unlike
-        // fitness, this is comparable across generations. (Use `eval` for
-        // the held-out TightAggressiveBot test.)
         if (gen % cfg.eval_every == 0 || gen == cfg.generations) {
-            Score s = evaluate(champion, VS_EQUITY, cfg.players, cfg.eval_hands, cfg.stack,
-                               cfg.seed + gen, cfg.threads, cfg.equity_samples);
-            bool improved = s.chips_per_hand > best_validation;
-            printf("        vs EquityBots: %+.2f +- %.2f chips/hand (%+.0f bb/100) over %ld hands%s\n",
-                   s.chips_per_hand, s.ci95, s.bb_per_100(), s.hands, improved ? "  [new best]" : "");
-            fflush(stdout);
-            if (improved) {
-                best_validation = s.chips_per_hand;
-                best_network = champion;
-                if (!cfg.out_path.empty() && !best_network.save(cfg.out_path)) {
-                    printf("        couldn't save to %s\n", cfg.out_path.c_str());
+            // Does the champion beat the past versions? Play a table of
+            // each one (fresh deals) and combine the results.
+            bool admit = pool.empty();
+            if (!pool.empty()) {
+                Tally against_pool;
+                for (int i = 0; i < (int)pool.size(); i++) {
+                    vector<Network> one = {pool[i]};
+                    auto pick = [&](FastRng& r) { return OpponentSpec{OPP_NETWORK, 0, r()}; };
+                    Tally t = evaluate_with(champion, pick, one, cfg.players, cfg.pool_hands, cfg.stack,
+                                            cfg.seed * 7 + gen * 131 + i, cfg.threads, cfg.equity_samples);
+                    against_pool.add(t);
+                }
+                Score p = against_pool.score();
+                admit = p.chips_per_hand - p.ci95 > 0;
+                printf("        vs %zu past versions: %+.2f +- %.2f chips/hand -> %s\n", pool.size(),
+                       p.chips_per_hand, p.ci95, admit ? "better, joins the pool" : "not clearly better");
+            }
+
+            // Also track how it does against the fixed bots in the mix.
+            auto pick = [&](FastRng& r) { return sample_opponent(r, cfg, 0, false); };
+            Score v = evaluate_with(champion, pick, {}, cfg.players, cfg.eval_hands, cfg.stack,
+                                    cfg.seed + gen, cfg.threads, cfg.equity_samples).score();
+            printf("        vs fixed bots in the mix: %+.2f +- %.2f chips/hand (%+.0f bb/100)\n",
+                   v.chips_per_hand, v.ci95, v.bb_per_100());
+
+            if (admit) {
+                if ((int)pool.size() >= cfg.pool_size) { // replace the oldest version
+                    printf("        replaces v%04d, the oldest version\n", pool_gen[0]);
+                    if (!pool_dir.empty()) filesystem::remove(version_path(pool_gen[0]));
+                    pool.erase(pool.begin());
+                    pool_gen.erase(pool_gen.begin());
+                }
+                pool.push_back(champion);
+                pool_gen.push_back(gen);
+                newest = champion;
+                if (!cfg.out_path.empty()) {
+                    if (!newest.save(cfg.out_path) || !newest.save(version_path(gen).string())) {
+                        printf("        couldn't save to %s\n", cfg.out_path.c_str());
+                    }
                 }
             }
+            fflush(stdout);
         }
 
         // Next generation: keep the elites, fill the rest with mutated
@@ -219,5 +295,8 @@ Network train(const TrainConfig& cfg) {
         }
         population = std::move(next);
     }
-    return best_network;
+    printf("Pool: %zu versions (from generations", pool.size());
+    for (int g : pool_gen) printf(" %d", g);
+    printf(")\n");
+    return newest;
 }

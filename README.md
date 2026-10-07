@@ -1,125 +1,81 @@
-# Summary
+# PokerAI
 
-The goal by the end of the project is to train an AI to be really good at poker
+A Texas Hold'em engine in C++ and an AI trained to play it, with a raylib
+table to play against it.
 
-## 🤖 AI Learning
+- **[Poker engine docs](docs/POKER.md):** rules, game flow, the table UI,
+  testing, and performance
+- **[AI docs](docs/AI.md):** inputs, network, training, experiments, and
+  results
 
-### Training Structure
-- Runs as **9-player tournaments**
-- After every **100 hands**, the **bottom 4 players** are replaced by **mutations**
+## Results
 
-### Inputs (Information)
-- Own stack size
-- Opponents' stack sizes
-- Position
-- Hand (hole cards)
-- Community cards
-- Likelihood of hitting each hand
-- Bet history
+Two networks were trained with a genetic algorithm to maximize chips won per
+hand: one for **heads-up** (2 players) and one for **6-max** (6 players).
+These are the models committed in `models/`. Each was played for 50,000 cash
+hands per opponent type, with 100 big blind stacks and 1/2 blinds. Numbers are
+chips won per hand (± 95% confidence interval):
 
-### Outputs (Actions)
-- Fold
-- Check
-- Call
-- Bet
-- Raise
-- All In
+| Opponents | Heads-up AI | 6-max AI |
+|---|---|---|
+| RandomBots | +20.2 ± 0.8 | +27.4 ± 1.9 |
+| CallBots | +48.0 ± 1.1 | +91.8 ± 3.5 |
+| EquityBots | **+7.0 ± 0.6** | **+2.0 ± 0.7** |
+| TightAggressiveBots *(held out)* | -0.2 ± 0.1 | -4.0 ± 0.4 |
+| LooseAggressiveBots *(held out)* | +4.4 ± 0.5 | -11.8 ± 1.2 |
 
-# ♠️ Poker Game
+"Held out" means these hand-written bots are never used in training, so they
+test whether the AI learned poker in general or only the bots it trained
+against. The committed models beat their training opponents but don't
+handle new styles well. The 6-max model loses badly to loose-aggressive
+play.
 
-A Texas Hold'em style game for **up to 9 players**. Each player is dealt **2 hole cards** and starts with a standard amount of chips.
+**Current progress:** training now uses a **pool of the AI's own past
+versions** plus tight, loose-aggressive and random players. A new version
+joins the pool only once it beats the versions already there. That 6-max
+model:
+- improves the held-out average from **-7.9 to -0.5** chips/hand;
+- wins **+8.2** chips/hand at a table of committed 6-max models;
+- is harder to exploit, but wins less from weak players.
 
-## 🃏 Rounds of Play
+It hasn't replaced the committed model yet. The full experiments are in
+[docs/AI.md](docs/AI.md#findings).
 
-### 1. Preflop Betting
-- Cards are dealt starting with the **Small Blind (SB)**
-- No community cards are shown
-- **SB** and **Big Blind (BB)** post the blinds
-  - If either player cannot cover their blind, they are forced **all in**
-- Action begins **Under the Gun (UTG)**
+## Quick start
 
-### 2. Flop Betting
-- **3 community cards** are revealed
-- Action begins with the **Small Blind**
+Requires macOS with Homebrew and clang (C++20).
 
-### 3. Turn Betting
-- **1 additional** community card is revealed
+```sh
+brew install raylib
+clang++ -std=c++20 -O3 -flto -Isrc -I/opt/homebrew/include \
+    src/main.cpp src/engine/*.cpp src/bots/*.cpp src/ai/*.cpp \
+    -L/opt/homebrew/lib -lraylib -o poker
+```
 
-### 4. River Betting
-- **1 additional** community card is revealed
+In VS Code, **Cmd+Shift+B** builds a debug version. Use
+**Terminal → Run Build Task → "Build poker (release, for training)"** for an
+optimized build, which is about 10× faster.
 
-### 5. Showdown
-- Winner is determined by **hand rankings**
-- The pot is **chopped** if the best hands are of equal strength
-- The pot may be **split into side pots** if some players are all in
+| Command | What it does |
+|---|---|
+| `./poker` | You (Player 1) against 8 RandomBots in the table window |
+| `./poker play models/headsup.net` | You against a trained AI, at the table size it was trained for |
+| `./poker hotseat` | All 9 seats are human, taking turns on one screen |
+| `./poker train <6max\|headsup> [option=value ...]` | Trains a new network ([options](docs/AI.md#training)) |
+| `./poker eval <model> [hands] [opponent model]` | Plays a model against each kind of bot (and optionally head-to-head against another model) and reports chips/hand |
+| `./poker sim [games] [seed] [threads]` | Bot-only tournaments with no window, for benchmarking the engine |
+| `./poker features [seed]` | Prints the AI's input vector at each decision during one hand |
 
----
+## Project layout
 
-## 🎯 Actions
-
-| Action | Description |
-|--------|-------------|
-| **Fold** | Player forfeits the hand |
-| **Check** | Pass action without betting; only allowed if no bet has been made |
-| **Call** | Player matches the current bet |
-| **Bet** | First wager in a betting round (occurs after preflop) |
-| **Raise** | Player increases the current bet; must be **at least 2x** |
-| **All In** | Player puts all of their remaining chips in the pot |
-
-### All-In Rules
-- If a call forces a player all in, the pot is **split** into side pots
-- All-in raises do **not** need to meet the 2x minimum
-- A player who loses all their chips is **eliminated**
-
-### End of a Betting Round
-A betting round continues until either:
-- Only **one player** remains in the hand, or
-- Every remaining player has **matched the bet** or is **all in**
-
-### Winning the Hand
-The winner is either the **last player remaining** in the pot or the best hand at **showdown**.
-
----
-
-## 🏆 Hand Rankings
-
-*(Highest to lowest)*
-
-1. **Straight Flush**
-2. **Four of a Kind** (Quads)
-3. **Full House**
-4. **Flush**
-5. **Straight**
-6. **Three of a Kind** (Trips)
-7. **Two Pair**
-8. **One Pair**
-9. **High Card**
-
----
-
-## 🧱 Object-Oriented Design
-
-### `Game` Class
-| Attribute | Description |
-|-----------|-------------|
-| `players` | List of players |
-| `deck` | List of cards remaining |
-| `round` | Current betting round |
-| `bb_position` | Big Blind position |
-| `pot` | Current pot size |
-| `hand_counter` | Number of hands played (used for training) |
-
-### `Player` Class
-| Attribute | Description |
-|-----------|-------------|
-| `chips` | Chip count |
-| `position` | Seat position at the table |
-| `cards` | Player's hole cards |
-
-### `Card` Enums
-- **Ranks:** `1, 2, 3, 4, 5, 6, 7, 8, 9, T, J, Q, K, A`
-- **Suits:** `Heart, Diamond, Spade, Club`
-
----
-
-
+```
+src/
+  main.cpp       command-line modes
+  engine/        game rules: cards, betting, side pots, hand evaluator
+  bots/          rule-based bots: Random, Call, Equity, Style, TightAggressive, LooseAggressive
+  ai/            feature extractor, neural network, genetic-algorithm trainer
+  ui/            raylib table
+models/          trained networks (headsup.net, 6max.net); training also writes a
+               pool of past versions to models/<table>_versions/
+docs/            engine and AI documentation
+```
