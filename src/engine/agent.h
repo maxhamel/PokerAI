@@ -1,6 +1,6 @@
 #pragma once
 
-#include "types.h"
+#include "engine/types.h"
 
 // Decides the actions for a seat: a person using the UI, or a bot.
 class Agent {

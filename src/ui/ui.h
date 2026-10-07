@@ -1,8 +1,8 @@
 #pragma once
 
 #include "raylib.h"
-#include "types.h"
-#include "agent.h"
+#include "engine/types.h"
+#include "engine/agent.h"
 #include <cmath>
 #include <optional>
 

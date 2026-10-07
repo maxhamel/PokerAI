@@ -1,6 +1,6 @@
 #pragma once
 
-#include "types.h"
+#include "engine/types.h"
 #include <span>
 
 // Scores the best five-card hand made from `hole` plus `board` (5 to 7 cards

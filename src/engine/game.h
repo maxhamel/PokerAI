@@ -1,8 +1,8 @@
 #pragma once
 
-#include "types.h"
-#include "agent.h"
-#include "rng.h"
+#include "engine/types.h"
+#include "engine/agent.h"
+#include "engine/rng.h"
 
 class Player {
     private:
@@ -68,6 +68,10 @@ class Player {
         void add_chips(int x) {
             chip_count += x;
         }
+
+        void set_chips(int x) {
+            chip_count = x;
+        }
 };
 
 // Runs the game: dealing, betting, showdowns and payouts. It knows nothing
@@ -85,6 +89,8 @@ class Game {
         int cards_left = 0;       // deck[0, cards_left) haven't been dealt this hand
         vector <Card> community;
         Street street = PREFLOP;
+        array<int, 4> raises{};   // bets/raises per street, this hand
+        int last_aggressor = -1;  // seat of the last bet/raise this hand
         int button_pos = 0;
         int pot_size = 0;
         int current_bet = 0; // highest street bet this round
@@ -96,7 +102,7 @@ class Game {
         vector<string> log_lines;
         PlayerView view;            // reused for every decision
         // scratch space reused every hand, so the game loop doesn't allocate
-        vector<int> acted_at_buf, bets_buf, scores_buf, won_buf, winners_buf;
+        vector<int> acted_at_buf, bets_buf, scores_buf, won_buf, winners_buf, profit_buf;
 
         void createDeck();
         void createPlayers();
@@ -124,6 +130,13 @@ class Game {
 
         int play();
         void play_hand();
+
+        // Gives every player `stack` chips (e.g. before a tournament).
+        void set_stacks(int stack);
+
+        // Cash-game style hand: everyone starts with `stack` chips, so every
+        // hand is independent. Returns each seat's profit (or loss) in chips.
+        const vector<int>& play_cash_hand(int stack);
         int players_with_chips();
         int hands_played() const { return hand_counter; }
         const vector<Player>& get_players() const { return players; }

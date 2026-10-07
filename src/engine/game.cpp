@@ -1,5 +1,5 @@
-#include "game.h"
-#include "evaluator.h"
+#include "engine/game.h"
+#include "engine/evaluator.h"
 
 void Game::createDeck() {
 
@@ -103,6 +103,9 @@ void Game::fill_public(PlayerView& v) {
     v.button = button_pos;
     v.small_blind = sb_pos;
     v.big_blind = bb_pos;
+    v.street = street;
+    v.raises = raises;
+    v.last_aggressor = last_aggressor;
     v.pot = pot_size;
     v.to_call = 0;
     v.current_bet = current_bet;
@@ -185,6 +188,8 @@ void Game::betting_round(int first) {
             }
             current_bet = a.amount;
             pot_size += p.bet(a.amount - p.get_street_bet());
+            raises[street]++;
+            last_aggressor = i;
         }
         acted_at[i] = current_bet;
         if (a.type == FOLD) { live--; active--; }
@@ -213,6 +218,9 @@ void Game::play_hand() {
     reset_hand();
     hand_counter++;
     if (logging) log("--- Hand #" + to_string(hand_counter) + " ---");
+    street = PREFLOP;
+    raises.fill(0);
+    last_aggressor = -1;
 
     // Heads-up, the button posts the small blind and acts first preflop.
     sb_pos = live_count() == 2 ? button_pos : next_seat_with_chips(button_pos);
@@ -224,6 +232,7 @@ void Game::play_hand() {
     for (int cards : cards_per_street) {
         if (live_count() <= 1) break;
         deal(cards);
+        street = static_cast<Street>(street + 1);
         new_street();
         if (logging) log(community.size() == 3 ? "Flop" : community.size() == 4 ? "Turn" : "River");
         betting_round(button_pos + 1); // postflop starts left of the button
@@ -245,6 +254,18 @@ void Game::play_hand() {
         observer->hand_over(table_view(), result);
     }
     button_pos = next_seat_with_chips(button_pos);
+}
+
+void Game::set_stacks(int stack) {
+    for (Player &p: players) p.set_chips(stack);
+}
+
+const vector<int>& Game::play_cash_hand(int stack) {
+    set_stacks(stack);
+    play_hand();
+    profit_buf.resize(players.size());
+    for (int i = 0; i < (int)players.size(); i++) profit_buf[i] = players[i].get_chips() - stack;
+    return profit_buf;
 }
 
 // Plays hands until one player has all the chips. Returns the winner's seat.

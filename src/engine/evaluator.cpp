@@ -1,4 +1,4 @@
-#include "evaluator.h"
+#include "engine/evaluator.h"
 
 // Hands are scored as category << 20 followed by up to five 4-bit ranks
 // (most important first), e.g. a pair of kings with A-9-4 kickers is

@@ -42,6 +42,7 @@ struct Card {
     Suit suit;
     Rank rank;
 
+    Card() : suit(HEART), rank(TWO) {}
     Card(Suit s, Rank r) : suit(s), rank(r) {}
 };
 
@@ -63,6 +64,9 @@ struct PlayerView {
     int button;
     int small_blind;
     int big_blind;
+    Street street;
+    array<int, 4> raises;       // bets/raises made on each street so far this hand
+    int last_aggressor;         // seat that made the last bet/raise this hand, or -1
     int pot;
     int to_call;
     int current_bet;
